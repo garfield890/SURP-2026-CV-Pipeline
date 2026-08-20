@@ -1,0 +1,41 @@
+# Virtual environments
+.venv/
+.venv_ane/
+venv/
+env/
+ENV/
+
+# Model weights & binary packages (Large files)
+models/
+*.pt
+*.pth
+*.onnx
+*.safetensors
+*.bin
+*.mlpackage/
+*.engine
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Build & packaging
+build/
+dist/
+*.egg-info/
+*.spec
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor & LSP caches
+.ruby-lsp/
+.vscode/
+.idea/
+
+# Local media / test outputs (uncomment if you save recordings here)
+# webcams/
