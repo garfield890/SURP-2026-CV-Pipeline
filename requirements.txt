@@ -1,0 +1,22 @@
+# Computer Vision & Object Detection
+ultralytics
+opencv-python
+pillow
+
+# Deep Learning Framework
+torch
+torchvision
+accelerate
+safetensors
+
+# Language & Vision-Language Models
+transformers
+moondream
+
+# GUI & Audio / Voice
+PyQt6
+SpeechRecognition
+pyaudio
+
+# CoreML Model Export (Apple Silicon / iOS)
+coremltools
