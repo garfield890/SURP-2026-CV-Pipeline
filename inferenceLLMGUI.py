@@ -2,6 +2,7 @@ import os
 import sys
 import cv2
 import time
+import statistics
 import subprocess
 import torch
 import threading
@@ -70,7 +71,7 @@ fps_label_style = """
         background-color: rgba(15, 15, 15, 0.85);
         color: #EEEEEE;
         border: 1px solid #444444;
-        padding: 10px 24px;
+        padding: 10px 36px;
         font-size: 24px;
         font-weight: bold;
     }
@@ -162,7 +163,7 @@ class CVWindow(QMainWindow):
         tr_layout.setContentsMargins(0, 0, 0, 0)
         self.fps_status_label = QLabel(self.top_right_container)
         self.fps_status_label.setStyleSheet(fps_label_style)
-        self.fps_status_label.setMinimumWidth(160)
+        self.fps_status_label.setMinimumWidth(380)
         self.fps_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         tr_layout.addWidget(self.fps_status_label)
 
@@ -256,6 +257,9 @@ class CVWindow(QMainWindow):
 
         self.last_frame_time = time.time()
         self.fps = 0.0
+        self.fps_history = []
+        self.mean_fps = 0.0
+        self.std_fps = 0.0
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_frame)
@@ -400,7 +404,7 @@ class CVWindow(QMainWindow):
         # Update text labels
         audio_label = "MUTED" if self.muted else "AUDIO ON"
         self.status_label.setText(f"🔴 REC   |   {audio_label}")
-        self.fps_status_label.setText(f"FPS: {self.fps:.1f}")
+        self.fps_status_label.setText(f"FPS: {self.fps:.1f} (Avg: {self.mean_fps:.1f})")
         self.model_status_label.setText(f"LLM: Qwen2.5-0.5B   |   YOLO MODEL:  {self.active_model_name}")
 
         if not self.top_left_container.isVisible():
@@ -425,11 +429,17 @@ class CVWindow(QMainWindow):
         if not self.video_queue.full():
             self.video_queue.put(frame)
 
-        # Calculate Total Frame Time & FPS
+        # Calculate Total Frame Time, Instantaneous FPS, Mean FPS & Std Dev FPS
         t_total = (time.time() - t_start) * 1000
         elapsed_since_last_frame = time.time() - self.last_frame_time
         self.last_frame_time = time.time()
         self.fps = 1.0 / elapsed_since_last_frame if elapsed_since_last_frame > 0 else 0
+
+        if self.fps > 0:
+            self.fps_history.append(self.fps)
+            stats_data = self.fps_history[5:] if len(self.fps_history) > 10 else self.fps_history
+            self.mean_fps = statistics.mean(stats_data)
+            self.std_fps = statistics.stdev(stats_data) if len(stats_data) > 1 else 0.0
 
         print(
             f"Read: {t_read:4.1f} ms | "
@@ -437,7 +447,8 @@ class CVWindow(QMainWindow):
             f"Overlays: {t_overlays:3.1f} ms | "
             f"Qt Render: {t_qt_render:4.1f} ms | "
             f"Total: {t_total:4.1f} ms | "
-            f"FPS: {self.fps:4.1f}"
+            f"FPS: {self.fps:4.1f} | "
+            f"Mean FPS: {self.mean_fps:4.1f} ± {self.std_fps:4.2f}"
         )
 
     def run_llm_inference(self):
@@ -576,12 +587,14 @@ class CVWindow(QMainWindow):
     def select_model_1(self):
         self.model = self.model_1
         self.active_model_name = "YOLO26m Access"
+        self.fps_history.clear()
         self.btn_model1.setChecked(True)
         self.btn_model2.setChecked(False)
 
     def select_model_2(self):
         self.model = self.model_2
         self.active_model_name = "YOLOv8m"
+        self.fps_history.clear()
         self.btn_model1.setChecked(False)
         self.btn_model2.setChecked(True)
 
@@ -599,6 +612,25 @@ class CVWindow(QMainWindow):
         self.out.release()
         self.timer.stop()
         print(f"Output saved to {self.output_filename}")
+
+        # Print Comprehensive Session FPS Performance Summary
+        if self.fps_history:
+            stats_data = self.fps_history[5:] if len(self.fps_history) > 10 else self.fps_history
+            mean_f = statistics.mean(stats_data)
+            std_f = statistics.stdev(stats_data) if len(stats_data) > 1 else 0.0
+            median_f = statistics.median(stats_data)
+            min_f = min(stats_data)
+            max_f = max(stats_data)
+            print("\n" + "=" * 55)
+            print(f"       FPS PERFORMANCE SUMMARY ({self.active_model_name})       ")
+            print("=" * 55)
+            print(f"Total Frames Processed: {len(self.fps_history)}")
+            print(f"Mean FPS:               {mean_f:.2f} FPS")
+            print(f"Median FPS:             {median_f:.2f} FPS")
+            print(f"Standard Deviation (σ): {std_f:.2f} FPS")
+            print(f"Min / Max FPS:          {min_f:.1f} / {max_f:.1f} FPS")
+            print("=" * 55 + "\n")
+
         event.accept()
 
 if __name__ == "__main__":
