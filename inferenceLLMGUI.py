@@ -1,3 +1,4 @@
+from PIL import ExifTags
 import os
 import sys
 import cv2
@@ -12,7 +13,8 @@ from PyQt6.QtCore import QTimer, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap, QKeySequence, QShortcut
 from PyQt6.QtWidgets import QApplication, QLabel, QMainWindow, QPushButton, QWidget, QHBoxLayout, QVBoxLayout
 from ultralytics import YOLO
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForImageTextToText, AutoProcessor
+from PIL import Image
 
 def get_resource_path(relative_path):
     if hasattr(sys, '_MEIPASS'):
@@ -29,8 +31,8 @@ else:
 
 MODEL_1_PATH = get_resource_path("yolo26m_access_track.mlpackage")
 MODEL_2_PATH = get_resource_path("yolov8m.mlpackage")
-LLM_MODEL_PATH = get_resource_path("models/qwen2.5-0.5b")
-ANNOUNCEMENT_COOLDOWN = 3.4  # seconds between end of last TTS and next LLM inference
+LLM_MODEL_PATH = get_resource_path("models/smolvlm2-500m")
+ANNOUNCEMENT_COOLDOWN = 1.0  # seconds between end of last TTS and next LLM inference
 
 btn_style = """
     QPushButton {
@@ -119,14 +121,11 @@ class CVWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("VITURE Glasses Stream")
 
-        try:
-            self.llm_model = AutoModelForCausalLM.from_pretrained(LLM_MODEL_PATH, torch_dtype="auto", device_map="auto")
-            self.tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL_PATH)
-            self.llm_model.eval()
-            print("Qwen model initialized successfully.")
-        except Exception as e:
-            print(f"Error: {e}")
-            exit()
+
+        self.llm_model = AutoModelForImageTextToText.from_pretrained(LLM_MODEL_PATH, torch_dtype=torch.float16, local_files_only=True).to(DEVICE)
+        self.processor = AutoProcessor.from_pretrained(LLM_MODEL_PATH, local_files_only=True)
+        self.llm_model.eval()
+        print("SmolVLM model initialized successfully.")
         
         screens = QApplication.screens()
 
@@ -392,8 +391,12 @@ class CVWindow(QMainWindow):
         if (current_time - self.last_announced) > ANNOUNCEMENT_COOLDOWN:
             if not self.llm_busy:
                 self.llm_busy = True
+                detections_copy = list(self.detections)
+                raw_frame = self.latest_raw_frame.copy() if self.latest_raw_frame is not None else frame.copy()
+                pil_image = Image.fromarray(cv2.cvtColor(raw_frame, cv2.COLOR_BGR2RGB))
                 threading.Thread(
                     target=self.run_llm_inference, 
+                    args=(pil_image, detections_copy),
                     daemon=True
                 ).start()
 
@@ -405,7 +408,7 @@ class CVWindow(QMainWindow):
         audio_label = "MUTED" if self.muted else "AUDIO ON"
         self.status_label.setText(f"🔴 REC   |   {audio_label}")
         self.fps_status_label.setText(f"FPS: {self.fps:.1f} (Avg: {self.mean_fps:.1f})")
-        self.model_status_label.setText(f"LLM: Qwen2.5-0.5B   |   YOLO MODEL:  {self.active_model_name}")
+        self.model_status_label.setText(f"VLM: SmolVLM2-500M   |   YOLO MODEL:  {self.active_model_name}")
 
         if not self.top_left_container.isVisible():
             self.reposition_overlays()
@@ -451,51 +454,60 @@ class CVWindow(QMainWindow):
             f"Mean FPS: {self.mean_fps:4.1f} ± {self.std_fps:4.2f}"
         )
 
-    def run_llm_inference(self):
-        if self.llm_model is None or self.tokenizer is None:
+    def run_llm_inference(self, pil_image, detections):
+        print("\n\nrunning llm...\n\n")
+        if self.llm_model is None or self.processor is None:
             print("LLM Model is not initialized.")
-            exit()
+            return
         try:
-            if not self.detections:
+            if not detections:
+                print("Detections not found")
+                self.latest_description = "No relevant objects were detected in the scene."
                 return
 
-            self.det_str = ", ".join([f"{cls}" for cls, _ in self.detections])
+            det_str = ", ".join([f"{cls}" for cls, _ in detections])
+
+            prompt_text = (
+                f"The following objects were detected in the camera view: {det_str}. Using visual context from the full image, describe the scene in one concise natural sentence. Only mention the detected objects and their context. If no objects were detected, just say 'No relevant objects detected in the scene'."
+                )
 
             messages = [
                 {
-                    "role": "system", 
-                    "content": "You are a concise scene descriptor. Given detected objects from a camera, write one simple natural sentence naming the objects in the scene. Do not mention percentages, confidence scores, or numerical probabilities. Only mention the objects in the scene."
-                },
-                {
-                    "role": "user", 
-                    "content": f"Detections: {self.det_str}"
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": pil_image},
+                        {"type": "text", "text": prompt_text}
+                    ]
                 }
             ]
 
-            text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            model_inputs = self.tokenizer([text], return_tensors="pt").to(DEVICE)
+            inputs = self.processor.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt"
+            ).to(DEVICE, dtype=torch.float16)
 
             with torch.inference_mode():
                 generated_ids = self.llm_model.generate(
-                    **model_inputs,
-                    max_new_tokens=40,
-                    temperature=0.2,
-                    do_sample=True
+                    **inputs,
+                    do_sample=False,
+                    max_new_tokens=40
                 )
 
-            generated_ids = [
-                output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
-            ]
-            description = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
+            num_prompt_tokens = inputs["input_ids"].shape[1]
+            new_tokens = generated_ids[:, num_prompt_tokens:]
+            description = self.processor.batch_decode(new_tokens, skip_special_tokens=True)[0].strip()
             
+            print(description, end="\n")
             self.latest_description = description
-            print(f"\nDescription: {self.latest_description}\n")
+            print(f"\nDescription: {len(detections)} {self.latest_description}\n")
 
             self.speak(description)
             self.last_announced = time.time()
         except Exception as e:
             print(f"\nError: {e}\n")
-            exit()
         finally:
             self.llm_busy = False
     
