@@ -31,7 +31,7 @@ else:
 
 MODEL_1_PATH = get_resource_path("yolo26m_access_track.mlpackage")
 MODEL_2_PATH = get_resource_path("yolov8m.mlpackage")
-LLM_MODEL_PATH = get_resource_path("models/smolvlm2-500m")
+LLM_MODEL_PATH = get_resource_path("models/smolvlm2-500m") # https://huggingface.co/HuggingFaceTB/SmolVLM2-500M-Video-Instruct
 ANNOUNCEMENT_COOLDOWN = 1.0  # seconds between end of last TTS and next LLM inference
 
 btn_style = """
